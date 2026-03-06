@@ -72,7 +72,8 @@
                         <h3>Scorciatoie</h3>
                         <ul>
                             <li><kbd>Ctrl</kbd> + <kbd>O</kbd> - Apri file</li>
-                            <li><kbd>Ctrl</kbd> + <kbd>F</kbd> - Cerca nel file</li>
+                            <li><kbd>Ctrl</kbd> + <kbd>E</kbd> - Modifica / Visualizza</li>
+                            <li><kbd>Ctrl</kbd> + <kbd>S</kbd> - Salva file</li>
                             <li><kbd>Ctrl</kbd> + <kbd>T</kbd> - Cambia tema</li>
                         </ul>
                     </div>
@@ -89,13 +90,52 @@
                 
                 <!-- Raw View -->
                 <div class="raw-view" id="rawView" style="display: none;">
-                    <pre><code id="rawContent"></code></pre>
+                    <div class="raw-toolbar">
+                        <span class="toolbar-info">
+                            <span id="rawModeLabel">Sorgente</span>
+                            <span id="unsavedIndicator" class="unsaved-indicator" style="display: none;">● Non salvato</span>
+                        </span>
+                        <div class="toolbar-actions">
+                            <button id="toggleEditMode" class="mode-toggle-btn" title="Passa alla modalità modifica">
+                                <span class="toggle-icon">✏️</span>
+                                <span class="toggle-text">Modifica</span>
+                            </button>
+                            <button id="saveBtn" class="editor-btn" title="Salva (Ctrl+S)" style="display: none;">💾 Salva</button>
+                        </div>
+                    </div>
+                    <!-- Read-only view -->
+                    <div class="raw-readonly" id="rawReadonly">
+                        <pre><code id="rawContentDisplay"></code></pre>
+                    </div>
+                    <!-- Editor view -->
+                    <div class="raw-editor" id="rawEditor" style="display: none;">
+                        <textarea id="rawContent" class="editor-textarea" placeholder="Scrivi il tuo Markdown qui..."></textarea>
+                    </div>
                 </div>
                 
                 <!-- Split View -->
                 <div class="split-view" id="splitView" style="display: none;">
                     <div class="split-raw">
-                        <pre><code id="splitRawContent"></code></pre>
+                        <div class="raw-toolbar">
+                            <span class="toolbar-info">
+                                <span id="splitModeLabel">Sorgente</span>
+                            </span>
+                            <div class="toolbar-actions">
+                                <button id="toggleEditModeSplit" class="mode-toggle-btn" title="Passa alla modalità modifica">
+                                    <span class="toggle-icon">✏️</span>
+                                    <span class="toggle-text">Modifica</span>
+                                </button>
+                                <button id="saveBtnSplit" class="editor-btn" title="Salva (Ctrl+S)" style="display: none;">💾 Salva</button>
+                            </div>
+                        </div>
+                        <!-- Read-only view -->
+                        <div class="raw-readonly" id="splitRawReadonly">
+                            <pre><code id="splitRawDisplay"></code></pre>
+                        </div>
+                        <!-- Editor view -->
+                        <div class="raw-editor" id="splitRawEditor" style="display: none;">
+                            <textarea id="splitRawContent" class="editor-textarea" placeholder="Scrivi il tuo Markdown qui..."></textarea>
+                        </div>
                     </div>
                     <div class="split-rendered">
                         <article class="markdown-body" id="splitRenderedContent"></article>
@@ -117,6 +157,10 @@
         let currentView = 'rendered';
         let isDarkTheme = true;
         let fileData = { html: '', raw: '', toc: '' };
+        let hasUnsavedChanges = false;
+        let originalContent = '';
+        let previewDebounceTimer = null;
+        let isEditMode = false;
         
         // DOM Elements
         const fileList = document.getElementById('fileList');
@@ -129,9 +173,11 @@
         const splitView = document.getElementById('splitView');
         const markdownContent = document.getElementById('markdownContent');
         const rawContent = document.getElementById('rawContent');
+        const splitRawContent = document.getElementById('splitRawContent');
         const tocContent = document.getElementById('tocContent');
         const loadingOverlay = document.getElementById('loadingOverlay');
         const themeToggle = document.getElementById('themeToggle');
+        const unsavedIndicator = document.getElementById('unsavedIndicator');
         
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
@@ -168,8 +214,32 @@
             // Drag and drop
             setupDragAndDrop();
             
+            // Editor live preview
+            rawContent.addEventListener('input', handleEditorInput);
+            splitRawContent.addEventListener('input', handleEditorInput);
+            
+            // Sync editors
+            rawContent.addEventListener('input', () => syncEditors('raw'));
+            splitRawContent.addEventListener('input', () => syncEditors('split'));
+            
+            // Save buttons
+            document.getElementById('saveBtn').addEventListener('click', saveFile);
+            document.getElementById('saveBtnSplit').addEventListener('click', saveFile);
+            
+            // Edit mode toggles
+            document.getElementById('toggleEditMode').addEventListener('click', toggleEditMode);
+            document.getElementById('toggleEditModeSplit').addEventListener('click', toggleEditMode);
+            
             // Keyboard shortcuts
             document.addEventListener('keydown', handleKeyboard);
+            
+            // Warn before leaving with unsaved changes
+            window.addEventListener('beforeunload', (e) => {
+                if (hasUnsavedChanges) {
+                    e.preventDefault();
+                    e.returnValue = '';
+                }
+            });
         }
         
         function setupDragAndDrop() {
@@ -267,11 +337,19 @@
                         
                         fileData = data;
                         markdownContent.innerHTML = data.html;
-                        rawContent.textContent = data.raw;
+                        rawContent.value = data.raw;
                         tocContent.innerHTML = data.toc;
                         
-                        document.getElementById('splitRawContent').textContent = data.raw;
+                        // Raw read-only displays
+                        document.getElementById('rawContentDisplay').textContent = data.raw;
+                        document.getElementById('splitRawDisplay').textContent = data.raw;
+                        
+                        splitRawContent.value = data.raw;
                         document.getElementById('splitRenderedContent').innerHTML = data.html;
+                        
+                        originalContent = data.raw;
+                        setUnsavedChanges(false);
+                        setEditMode(false);
                         
                         document.querySelectorAll('pre code').forEach(block => {
                             hljs.highlightElement(block);
@@ -329,12 +407,21 @@
                     
                     // Render content
                     markdownContent.innerHTML = data.html;
-                    rawContent.textContent = data.raw;
+                    rawContent.value = data.raw;
                     tocContent.innerHTML = data.toc;
                     
+                    // Raw read-only displays
+                    document.getElementById('rawContentDisplay').textContent = data.raw;
+                    document.getElementById('splitRawDisplay').textContent = data.raw;
+                    
                     // Split view
-                    document.getElementById('splitRawContent').textContent = data.raw;
+                    splitRawContent.value = data.raw;
                     document.getElementById('splitRenderedContent').innerHTML = data.html;
+                    
+                    // Reset editor state
+                    originalContent = data.raw;
+                    setUnsavedChanges(false);
+                    setEditMode(false);
                     
                     // Syntax highlighting for code blocks
                     document.querySelectorAll('pre code').forEach(block => {
@@ -426,6 +513,178 @@
                 e.preventDefault();
                 document.getElementById('fileInput').click();
             }
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                saveFile();
+            }
+            if (e.ctrlKey && e.key === 'e') {
+                e.preventDefault();
+                toggleEditMode();
+            }
+        }
+        
+        function handleEditorInput(e) {
+            const content = e.target.value;
+            setUnsavedChanges(content !== originalContent);
+            
+            // Debounce live preview
+            clearTimeout(previewDebounceTimer);
+            previewDebounceTimer = setTimeout(() => {
+                updateLivePreview(content);
+            }, 300);
+        }
+        
+        function syncEditors(source) {
+            const content = source === 'raw' ? rawContent.value : splitRawContent.value;
+            if (source === 'raw') {
+                splitRawContent.value = content;
+            } else {
+                rawContent.value = content;
+            }
+        }
+        
+        async function updateLivePreview(content) {
+            try {
+                const response = await fetch('/api/preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    markdownContent.innerHTML = data.html;
+                    document.getElementById('splitRenderedContent').innerHTML = data.html;
+                    
+                    // Re-apply syntax highlighting
+                    document.querySelectorAll('pre code').forEach(block => {
+                        hljs.highlightElement(block);
+                    });
+                }
+            } catch (error) {
+                console.error('Preview update failed:', error);
+            }
+        }
+        
+        function setUnsavedChanges(unsaved) {
+            hasUnsavedChanges = unsaved;
+            unsavedIndicator.style.display = unsaved ? 'inline' : 'none';
+            
+            // Update file status
+            if (unsaved && currentFile) {
+                fileStatus.textContent = 'Modificato';
+                fileStatus.className = 'file-status warning';
+            }
+        }
+        
+        function toggleEditMode() {
+            setEditMode(!isEditMode);
+        }
+        
+        function setEditMode(editing) {
+            isEditMode = editing;
+            
+            // Raw view elements
+            const rawReadonly = document.getElementById('rawReadonly');
+            const rawEditor = document.getElementById('rawEditor');
+            const saveBtn = document.getElementById('saveBtn');
+            const toggleBtn = document.getElementById('toggleEditMode');
+            const rawModeLabel = document.getElementById('rawModeLabel');
+            
+            // Split view elements
+            const splitRawReadonly = document.getElementById('splitRawReadonly');
+            const splitRawEditor = document.getElementById('splitRawEditor');
+            const saveBtnSplit = document.getElementById('saveBtnSplit');
+            const toggleBtnSplit = document.getElementById('toggleEditModeSplit');
+            const splitModeLabel = document.getElementById('splitModeLabel');
+            
+            if (editing) {
+                // Switch to edit mode
+                rawReadonly.style.display = 'none';
+                rawEditor.style.display = 'flex';
+                saveBtn.style.display = 'flex';
+                toggleBtn.innerHTML = '<span class="toggle-icon">👁️</span><span class="toggle-text">Visualizza</span>';
+                toggleBtn.title = 'Passa alla modalità visualizzazione';
+                rawModeLabel.textContent = 'Editor';
+                
+                splitRawReadonly.style.display = 'none';
+                splitRawEditor.style.display = 'flex';
+                saveBtnSplit.style.display = 'flex';
+                toggleBtnSplit.innerHTML = '<span class="toggle-icon">👁️</span><span class="toggle-text">Visualizza</span>';
+                toggleBtnSplit.title = 'Passa alla modalità visualizzazione';
+                splitModeLabel.textContent = 'Editor';
+                
+                // Focus on editor
+                if (currentView === 'raw') {
+                    rawContent.focus();
+                } else if (currentView === 'split') {
+                    splitRawContent.focus();
+                }
+            } else {
+                // Switch to read-only mode
+                rawReadonly.style.display = 'block';
+                rawEditor.style.display = 'none';
+                saveBtn.style.display = 'none';
+                toggleBtn.innerHTML = '<span class="toggle-icon">✏️</span><span class="toggle-text">Modifica</span>';
+                toggleBtn.title = 'Passa alla modalità modifica';
+                rawModeLabel.textContent = 'Sorgente';
+                
+                splitRawReadonly.style.display = 'block';
+                splitRawEditor.style.display = 'none';
+                saveBtnSplit.style.display = 'none';
+                toggleBtnSplit.innerHTML = '<span class="toggle-icon">✏️</span><span class="toggle-text">Modifica</span>';
+                toggleBtnSplit.title = 'Passa alla modalità modifica';
+                splitModeLabel.textContent = 'Sorgente';
+                
+                // Update read-only displays with current content
+                document.getElementById('rawContentDisplay').textContent = rawContent.value;
+                document.getElementById('splitRawDisplay').textContent = splitRawContent.value;
+            }
+        }
+        
+        async function saveFile() {
+            const content = rawContent.value;
+            
+            if (!currentFile) {
+                showNotification('Nessun file selezionato per il salvataggio', 'warning');
+                return;
+            }
+            
+            showLoading(true);
+            
+            try {
+                const response = await fetch('/api/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        file: currentFile, 
+                        content: content 
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    originalContent = content;
+                    setUnsavedChanges(false);
+                    fileStatus.textContent = 'Salvato';
+                    fileStatus.className = 'file-status success';
+                    showNotification('File salvato con successo', 'success');
+                    
+                    // Update TOC if provided
+                    if (result.toc) {
+                        tocContent.innerHTML = result.toc;
+                    }
+                } else {
+                    showNotification(result.error || 'Errore durante il salvataggio', 'error');
+                }
+            } catch (error) {
+                showNotification('Errore di connessione', 'error');
+                console.error(error);
+            }
+            
+            showLoading(false);
         }
         
         function showLoading(show) {
