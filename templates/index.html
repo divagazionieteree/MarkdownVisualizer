@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown Visualizer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>📄 MD Viewer</h1>
+            </div>
+            
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Cerca file...">
+            </div>
+            
+            <nav class="file-list" id="fileList">
+                {% for file in files %}
+                <div class="file-item" data-path="{{ file.path }}">
+                    <span class="file-icon">📝</span>
+                    <span class="file-name">{{ file.name }}</span>
+                </div>
+                {% else %}
+                <div class="no-files">Nessun file .md trovato</div>
+                {% endfor %}
+            </nav>
+            
+            <div class="upload-section">
+                <input type="file" id="fileInput" accept=".md,.markdown,.txt" style="display: none;">
+                <button id="uploadBtn" class="upload-btn" title="Carica file">
+                    <span class="upload-icon">📤</span>
+                    <span>Carica file</span>
+                </button>
+                <label class="upload-option">
+                    <input type="checkbox" id="saveToServer" checked>
+                    <span>Salva sul server</span>
+                </label>
+            </div>
+            
+            <div class="sidebar-footer">
+                <button id="refreshBtn" class="btn-icon" title="Aggiorna lista">🔄</button>
+                <button id="themeToggle" class="btn-icon" title="Cambia tema">🌙</button>
+            </div>
+        </aside>
+        
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="content-header">
+                <div class="file-info">
+                    <h2 id="currentFileName">Seleziona un file</h2>
+                    <span id="fileStatus" class="file-status"></span>
+                </div>
+                <div class="view-controls">
+                    <button id="viewRendered" class="view-btn active" title="Vista renderizzata">👁️ Preview</button>
+                    <button id="viewRaw" class="view-btn" title="Vista codice">📝 Raw</button>
+                    <button id="viewSplit" class="view-btn" title="Vista divisa">⬛ Split</button>
+                </div>
+            </header>
+            
+            <div class="content-wrapper" id="contentWrapper">
+                <!-- Welcome Screen -->
+                <div class="welcome-screen" id="welcomeScreen">
+                    <div class="welcome-icon">📖</div>
+                    <h2>Benvenuto in Markdown Visualizer</h2>
+                    <p>Seleziona un file dalla barra laterale per visualizzarlo</p>
+                    <div class="shortcuts">
+                        <h3>Scorciatoie</h3>
+                        <ul>
+                            <li><kbd>Ctrl</kbd> + <kbd>O</kbd> - Apri file</li>
+                            <li><kbd>Ctrl</kbd> + <kbd>F</kbd> - Cerca nel file</li>
+                            <li><kbd>Ctrl</kbd> + <kbd>T</kbd> - Cambia tema</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <!-- Rendered View -->
+                <div class="rendered-view" id="renderedView" style="display: none;">
+                    <div class="toc-sidebar" id="tocSidebar">
+                        <h3>📑 Indice</h3>
+                        <div id="tocContent"></div>
+                    </div>
+                    <article class="markdown-body" id="markdownContent"></article>
+                </div>
+                
+                <!-- Raw View -->
+                <div class="raw-view" id="rawView" style="display: none;">
+                    <pre><code id="rawContent"></code></pre>
+                </div>
+                
+                <!-- Split View -->
+                <div class="split-view" id="splitView" style="display: none;">
+                    <div class="split-raw">
+                        <pre><code id="splitRawContent"></code></pre>
+                    </div>
+                    <div class="split-rendered">
+                        <article class="markdown-body" id="splitRenderedContent"></article>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>
+        // State
+        let currentFile = null;
+        let currentView = 'rendered';
+        let isDarkTheme = true;
+        let fileData = { html: '', raw: '', toc: '' };
+        
+        // DOM Elements
+        const fileList = document.getElementById('fileList');
+        const searchInput = document.getElementById('searchInput');
+        const currentFileName = document.getElementById('currentFileName');
+        const fileStatus = document.getElementById('fileStatus');
+        const welcomeScreen = document.getElementById('welcomeScreen');
+        const renderedView = document.getElementById('renderedView');
+        const rawView = document.getElementById('rawView');
+        const splitView = document.getElementById('splitView');
+        const markdownContent = document.getElementById('markdownContent');
+        const rawContent = document.getElementById('rawContent');
+        const tocContent = document.getElementById('tocContent');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const themeToggle = document.getElementById('themeToggle');
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            loadTheme();
+        });
+        
+        function setupEventListeners() {
+            // File selection
+            document.querySelectorAll('.file-item').forEach(item => {
+                item.addEventListener('click', () => loadFile(item.dataset.path, item.querySelector('.file-name').textContent));
+            });
+            
+            // Search
+            searchInput.addEventListener('input', filterFiles);
+            
+            // View controls
+            document.getElementById('viewRendered').addEventListener('click', () => setView('rendered'));
+            document.getElementById('viewRaw').addEventListener('click', () => setView('raw'));
+            document.getElementById('viewSplit').addEventListener('click', () => setView('split'));
+            
+            // Theme toggle
+            themeToggle.addEventListener('click', toggleTheme);
+            
+            // Refresh
+            document.getElementById('refreshBtn').addEventListener('click', refreshFileList);
+            
+            // Upload
+            document.getElementById('uploadBtn').addEventListener('click', () => {
+                document.getElementById('fileInput').click();
+            });
+            document.getElementById('fileInput').addEventListener('change', handleFileUpload);
+            
+            // Drag and drop
+            setupDragAndDrop();
+            
+            // Keyboard shortcuts
+            document.addEventListener('keydown', handleKeyboard);
+        }
+        
+        function setupDragAndDrop() {
+            const dropZone = document.querySelector('.content-wrapper');
+            
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false);
+            });
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => {
+                    dropZone.classList.add('drag-over');
+                }, false);
+            });
+            
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => {
+                    dropZone.classList.remove('drag-over');
+                }, false);
+            });
+            
+            dropZone.addEventListener('drop', (e) => {
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    handleDroppedFile(files[0]);
+                }
+            }, false);
+        }
+        
+        async function handleFileUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            await processUploadedFile(file);
+            e.target.value = '';
+        }
+        
+        async function handleDroppedFile(file) {
+            if (!file.name.match(/\.(md|markdown|txt)$/i)) {
+                showNotification('Tipo di file non supportato. Usa .md, .markdown o .txt', 'error');
+                return;
+            }
+            await processUploadedFile(file);
+        }
+        
+        async function processUploadedFile(file) {
+            showLoading(true);
+            const saveToServer = document.getElementById('saveToServer').checked;
+            
+            try {
+                if (saveToServer) {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        showNotification(result.message, 'success');
+                        await refreshFileList();
+                        await loadFile(result.path, result.filename);
+                    } else {
+                        showNotification(result.error, 'error');
+                    }
+                } else {
+                    const content = await file.text();
+                    
+                    const response = await fetch('/api/upload-content', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ content, filename: file.name })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (data.success) {
+                        currentFile = null;
+                        document.querySelectorAll('.file-item').forEach(item => {
+                            item.classList.remove('active');
+                        });
+                        
+                        currentFileName.textContent = file.name + ' (non salvato)';
+                        fileStatus.textContent = 'Preview locale';
+                        fileStatus.className = 'file-status warning';
+                        
+                        fileData = data;
+                        markdownContent.innerHTML = data.html;
+                        rawContent.textContent = data.raw;
+                        tocContent.innerHTML = data.toc;
+                        
+                        document.getElementById('splitRawContent').textContent = data.raw;
+                        document.getElementById('splitRenderedContent').innerHTML = data.html;
+                        
+                        document.querySelectorAll('pre code').forEach(block => {
+                            hljs.highlightElement(block);
+                        });
+                        
+                        welcomeScreen.style.display = 'none';
+                        setView(currentView);
+                        
+                        showNotification('File caricato in anteprima (non salvato)', 'success');
+                    }
+                }
+            } catch (error) {
+                showNotification('Errore durante il caricamento', 'error');
+                console.error(error);
+            }
+            
+            showLoading(false);
+        }
+        
+        function showNotification(message, type) {
+            const existing = document.querySelector('.notification');
+            if (existing) existing.remove();
+            
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.textContent = message;
+            document.body.appendChild(notification);
+            
+            setTimeout(() => notification.classList.add('show'), 10);
+            setTimeout(() => {
+                notification.classList.remove('show');
+                setTimeout(() => notification.remove(), 300);
+            }, 3000);
+        }
+        
+        async function loadFile(path, name) {
+            showLoading(true);
+            currentFile = path;
+            
+            // Update UI
+            document.querySelectorAll('.file-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.path === path);
+            });
+            
+            currentFileName.textContent = name;
+            
+            try {
+                const response = await fetch(`/api/render?file=${encodeURIComponent(path)}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    fileData = data;
+                    fileStatus.textContent = 'Caricato';
+                    fileStatus.className = 'file-status success';
+                    
+                    // Render content
+                    markdownContent.innerHTML = data.html;
+                    rawContent.textContent = data.raw;
+                    tocContent.innerHTML = data.toc;
+                    
+                    // Split view
+                    document.getElementById('splitRawContent').textContent = data.raw;
+                    document.getElementById('splitRenderedContent').innerHTML = data.html;
+                    
+                    // Syntax highlighting for code blocks
+                    document.querySelectorAll('pre code').forEach(block => {
+                        hljs.highlightElement(block);
+                    });
+                    
+                    // Show content
+                    welcomeScreen.style.display = 'none';
+                    setView(currentView);
+                } else {
+                    fileStatus.textContent = data.error;
+                    fileStatus.className = 'file-status error';
+                }
+            } catch (error) {
+                fileStatus.textContent = 'Errore di caricamento';
+                fileStatus.className = 'file-status error';
+                console.error(error);
+            }
+            
+            showLoading(false);
+        }
+        
+        function setView(view) {
+            currentView = view;
+            
+            // Update buttons
+            document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(`view${view.charAt(0).toUpperCase() + view.slice(1)}`).classList.add('active');
+            
+            // Show/hide views
+            renderedView.style.display = view === 'rendered' ? 'flex' : 'none';
+            rawView.style.display = view === 'raw' ? 'block' : 'none';
+            splitView.style.display = view === 'split' ? 'flex' : 'none';
+        }
+        
+        function filterFiles() {
+            const query = searchInput.value.toLowerCase();
+            document.querySelectorAll('.file-item').forEach(item => {
+                const name = item.querySelector('.file-name').textContent.toLowerCase();
+                item.style.display = name.includes(query) ? 'flex' : 'none';
+            });
+        }
+        
+        function toggleTheme() {
+            isDarkTheme = !isDarkTheme;
+            document.body.classList.toggle('light-theme', !isDarkTheme);
+            themeToggle.textContent = isDarkTheme ? '🌙' : '☀️';
+            localStorage.setItem('theme', isDarkTheme ? 'dark' : 'light');
+        }
+        
+        function loadTheme() {
+            const saved = localStorage.getItem('theme');
+            if (saved === 'light') {
+                isDarkTheme = false;
+                document.body.classList.add('light-theme');
+                themeToggle.textContent = '☀️';
+            }
+        }
+        
+        async function refreshFileList() {
+            showLoading(true);
+            try {
+                const response = await fetch('/api/files');
+                const files = await response.json();
+                
+                fileList.innerHTML = files.map(file => `
+                    <div class="file-item ${currentFile === file.path ? 'active' : ''}" data-path="${file.path}">
+                        <span class="file-icon">📝</span>
+                        <span class="file-name">${file.name}</span>
+                    </div>
+                `).join('') || '<div class="no-files">Nessun file .md trovato</div>';
+                
+                // Re-attach listeners
+                document.querySelectorAll('.file-item').forEach(item => {
+                    item.addEventListener('click', () => loadFile(item.dataset.path, item.querySelector('.file-name').textContent));
+                });
+            } catch (error) {
+                console.error(error);
+            }
+            showLoading(false);
+        }
+        
+        function handleKeyboard(e) {
+            if (e.ctrlKey && e.key === 't') {
+                e.preventDefault();
+                toggleTheme();
+            }
+            if (e.ctrlKey && e.key === 'o') {
+                e.preventDefault();
+                document.getElementById('fileInput').click();
+            }
+        }
+        
+        function showLoading(show) {
+            loadingOverlay.style.display = show ? 'flex' : 'none';
+        }
+    </script>
+</body>
+</html>
